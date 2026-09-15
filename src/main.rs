@@ -110,7 +110,7 @@ const fn make_crc_table() -> [u32; 256] {
 pub fn check_chunk_ordering(chunks: &Vec<Chunk<'_>>) {
     let ihdr_pos = chunks.iter().position(|c| c.chunk_type == *b"IHDR");
     let plte_pos = chunks.iter().position(|c| c.chunk_type == *b"PlTE");
-    let idat_pos = chunks.iter().position(|c| c.chunk_type == *b"IDAT");
+    let first_idat_pos = chunks.iter().position(|c| c.chunk_type == *b"IDAT");
     let iend_pos = chunks.iter().position(|c| c.chunk_type == *b"IEND");
     let mut have_idat = false;
     let mut last_idat = false;
@@ -123,7 +123,10 @@ pub fn check_chunk_ordering(chunks: &Vec<Chunk<'_>>) {
         }
     }
     if let Some(p) = plte_pos {
-        assert!(p < idat_pos.unwrap(), "PLTE Chunk must Before first IDAT");
+        assert!(
+            p < first_idat_pos.unwrap(),
+            "PLTE Chunk must Before first IDAT"
+        );
     }
     assert_eq!(ihdr_pos, Some(0), "IHDR Chunk Shall be first");
     let pos = chunks.len() - 1;
@@ -269,7 +272,7 @@ impl Filter {
         }
     }
 
-    pub fn apply(&self, scanline: &mut [u8], prev_scanline: &[u8], bpp: usize) {
+    pub fn unfilter(&self, scanline: &mut [u8], prev_scanline: &[u8], bpp: usize) {
         match self {
             FilterType::None => {}
 
@@ -703,19 +706,7 @@ pub fn dynamic(data: &mut BitReader, out: &mut Vec<u8>) {
     codes(data, &mut lencode, &mut distcode, out);
 }
 
-// https://www.w3.org/TR/png-3/#11IHDR
-// struct IHDR {
-//     length: u32,
-//     chunk_type: [u8; 4],
-//     width: u32,
-//     height: u32,
-//     bit_width: u8,
-//     color_type: u8,
-//     compression_method: u8,
-//     filter_method: u8,
-//     interlace_method: u8,
-//     crc: u32,
-// }
+// https://www.w3.org/TR/png-3/#11IHDR Image header
 pub struct IHDRChunkData {
     pub width: u32,
     pub height: u32,
@@ -744,6 +735,205 @@ impl IHDRChunkData {
             interlace_method,
         }
     }
+}
+
+// https://www.w3.org/TR/png-3/#11PLTE Palette
+pub fn parse_chunk_plte(chunk_data: &[u8]) {
+    assert_eq!(
+        chunk_data.len() % 3,
+        0,
+        "The length of the PLTE chunk must be divisible by 3."
+    );
+}
+
+// https://www.w3.org/TR/png-3/#11cHRM Primary chromaticities and white point
+pub fn parse_chunk_chrm(chunk_data: &[u8]) {
+    assert_eq!(32, chunk_data.len());
+    let white_point_x = u32::from_be_bytes(chunk_data[..4].try_into().unwrap()) as f64 / 100000.0;
+    let white_point_y = u32::from_be_bytes(chunk_data[4..8].try_into().unwrap()) as f64 / 100000.0;
+    let red_x = u32::from_be_bytes(chunk_data[8..12].try_into().unwrap()) as f64 / 100000.0;
+    let red_y = u32::from_be_bytes(chunk_data[12..16].try_into().unwrap()) as f64 / 100000.0;
+    let green_x = u32::from_be_bytes(chunk_data[16..20].try_into().unwrap()) as f64 / 100000.0;
+    let green_y = u32::from_be_bytes(chunk_data[20..24].try_into().unwrap()) as f64 / 100000.0;
+    let blue_x = u32::from_be_bytes(chunk_data[24..28].try_into().unwrap()) as f64 / 100000.0;
+    let blue_y = u32::from_be_bytes(chunk_data[28..32].try_into().unwrap()) as f64 / 100000.0;
+    println!(
+        "\twhite_point_x:{white_point_x},white_point_y:{white_point_y},red_x:{red_x},red_y:{red_y},green_x:{green_x},green_y:{green_y},blue_x:{blue_x},blue_y:{blue_y}"
+    );
+}
+
+// https://www.w3.org/TR/png-3/#11gAMA Image gamma
+pub fn parse_chunk_gama(chunk_data: &[u8]) {
+    assert_eq!(4, chunk_data.len());
+    let gamma = u32::from_be_bytes(chunk_data[..4].try_into().unwrap()) as f64 / 100000.0;
+    println!("\tgamma:{gamma}");
+}
+
+// https://www.w3.org/TR/png-3/#11iCCP
+pub fn parse_chunk_iccp(chunk_data: &[u8]) {
+    let null_pos = chunk_data.iter().position(|&b| b == 0).unwrap();
+    let profile_name = str::from_utf8(&chunk_data[..null_pos]).unwrap();
+    let compression_method = chunk_data[null_pos + 1];
+    let _compressed_profile = &chunk_data[null_pos + 2..];
+    println!("\tProfile name:{profile_name},Compression method({compression_method})");
+}
+
+// https://www.w3.org/TR/png-3/#srgb-standard-colour-space Standard RGB color space
+#[repr(u8)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RenderingIntent {
+    Perceptual = 0,
+    RelativeColorimetric = 1,
+    Saturation = 2,
+    AbsoluteColorimetric = 3,
+}
+impl RenderingIntent {
+    pub fn new(val: u8) -> RenderingIntent {
+        match val {
+            0 => RenderingIntent::Perceptual,
+            1 => RenderingIntent::RelativeColorimetric,
+            2 => RenderingIntent::Saturation,
+            3 => RenderingIntent::AbsoluteColorimetric,
+            _ => unreachable!(),
+        }
+    }
+}
+pub fn parse_chunk_srgb(chunk_data: &[u8]) {
+    assert_eq!(1, chunk_data.len());
+    let rendering_intent = RenderingIntent::new(chunk_data[0]);
+    println!("\trendering intent:{rendering_intent:?}");
+}
+
+// https://www.w3.org/TR/png-3/#cICP-chunk Coding-independent code points for video signal type identification
+pub fn parse_chunk_cicp(chunk_data: &[u8]) {
+    assert_eq!(4, chunk_data.len());
+    let color_primaries = chunk_data[0];
+    let transfer_function = chunk_data[1];
+    let matrix_coefficients = chunk_data[2];
+    let video_full_range_flag = chunk_data[3];
+    println!(
+        "\tColor Primaries:({color_primaries}),\
+        Transfer Function:({transfer_function}),\
+        Matrix Coefficients:({matrix_coefficients}),\
+        Video Full Range Flag:({video_full_range_flag})"
+    );
+}
+
+// https://www.w3.org/TR/png-3/#11tIME Image last-modification time
+pub fn parse_chunk_time(chunk_data: &[u8]) {
+    assert_eq!(7, chunk_data.len());
+    let year = u16::from_be_bytes(chunk_data[..2].try_into().unwrap());
+    let month = chunk_data[2];
+    let day = chunk_data[3];
+    let hour = chunk_data[4];
+    let minute = chunk_data[5];
+    let second = chunk_data[6];
+    println!(
+        "\tlast-modification time:{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}"
+    );
+}
+
+// https://www.w3.org/TR/png-3/#11tEXt  Textual data
+pub fn parse_chunk_text(chunk_data: &[u8]) {
+    let null_pos = chunk_data.iter().position(|&b| b == 0).unwrap();
+    let keyword = str::from_utf8(&chunk_data[..null_pos]).unwrap();
+    let text_string = str::from_utf8(&chunk_data[null_pos + 1..]).unwrap();
+    println!("\tkeyword:{keyword},text_string:{text_string}");
+}
+
+// https://www.w3.org/TR/png-3/#11zTXt Compressed textual data
+pub fn parse_chunk_ztxt(chunk_data: &[u8]) {
+    let null_pos = chunk_data.iter().position(|&b| b == 0).unwrap();
+    let keyword = str::from_utf8(&chunk_data[..null_pos]).unwrap();
+    let compression_method = chunk_data[null_pos + 1];
+    let _compressed_text_datastream = &chunk_data[null_pos + 2..];
+    println!("\tkeyword:{keyword},Compression method({compression_method})");
+}
+
+// https://www.w3.org/TR/png-3/#11iTXt https://www.w3.org/TR/png-3/#11iTXt
+pub fn parse_chunk_itxt(chunk_data: &[u8]) {
+    let null_pos = chunk_data.iter().position(|&b| b == 0).unwrap();
+    let keyword = str::from_utf8(&chunk_data[..null_pos]).unwrap();
+    let compression_flag = chunk_data[null_pos + 1];
+    let compression_method = chunk_data[null_pos + 2];
+    // language_tag
+    let language_tag_start = null_pos + 3;
+
+    let null_pos2 = chunk_data[language_tag_start..]
+        .iter()
+        .position(|&b| b == 0)
+        .unwrap();
+    let language_tag_end = language_tag_start + null_pos2;
+    let language_tag = str::from_utf8(&chunk_data[language_tag_start..language_tag_end]).unwrap();
+    // translated_keyword
+    let translated_keyword_start = language_tag_end + 1;
+    let null_pos3 = chunk_data[translated_keyword_start..]
+        .iter()
+        .position(|&b| b == 0)
+        .unwrap();
+    let translated_keyword_end = translated_keyword_start + null_pos3;
+    let translated_keyword =
+        str::from_utf8(&chunk_data[translated_keyword_start..translated_keyword_end]).unwrap();
+    // text
+    let text = str::from_utf8(&chunk_data[translated_keyword_end + 1..]).unwrap();
+    println!(
+        "\tkeyword:{keyword}, \
+     compression_flag:{compression_flag}, \
+     compression_method:{compression_method}, \
+     language_tag:{language_tag}, \
+     translated_keyword:{translated_keyword}, \
+     text:{text}"
+    );
+}
+
+// https://www.w3.org/TR/png-3/#11pHYs Physical pixel dimensions
+pub fn parse_chunk_phys(chunk_data: &[u8]) {
+    let len = chunk_data.len();
+    assert_eq!(9, len);
+    let pixels_per_unit_x_axis = u32::from_be_bytes(chunk_data[..4].try_into().unwrap());
+    let pixels_per_unit_y_axis = u32::from_be_bytes(chunk_data[4..8].try_into().unwrap());
+    let unit_specifier = match chunk_data[8] {
+        0 => "unit is unknown",
+        1 => "unit is the metre",
+        _ => "Error",
+    };
+    println!("\tx:{pixels_per_unit_x_axis},y:{pixels_per_unit_y_axis},{unit_specifier}");
+}
+
+// https://www.w3.org/TR/png-3/#acTL-chunk Animation Control Chunk
+pub fn parse_chunk_actl(chunk_data: &[u8]) {
+    assert_eq!(8, chunk_data.len());
+    let num_frames = u32::from_be_bytes(chunk_data[..4].try_into().unwrap());
+    let num_plays = u32::from_be_bytes(chunk_data[4..].try_into().unwrap());
+    println!("\tnum_frames:{num_frames},num_plays:{num_plays}");
+}
+
+// https://www.w3.org/TR/png-3/#fcTL-chunk Frame Control Chunk
+pub fn parse_chunk_fctl(chunk_data: &[u8]) {
+    assert_eq!(26, chunk_data.len());
+    let sequence_number = u32::from_be_bytes(chunk_data[..4].try_into().unwrap());
+    let width = u32::from_be_bytes(chunk_data[4..8].try_into().unwrap());
+    let height = u32::from_be_bytes(chunk_data[8..12].try_into().unwrap());
+    let x_offset = u32::from_be_bytes(chunk_data[12..16].try_into().unwrap());
+    let y_offset = u32::from_be_bytes(chunk_data[16..20].try_into().unwrap());
+    let delay_num = u16::from_be_bytes(chunk_data[20..22].try_into().unwrap());
+    let delay_den = u16::from_be_bytes(chunk_data[22..24].try_into().unwrap());
+    let dispose_op = chunk_data[24];
+    let blend_op = chunk_data[25];
+    println!(
+        "\tsequence_number:{sequence_number},\
+        width:{width},height:{height},x_offset:{x_offset},y_offset:{y_offset},\
+        delay:({delay_num}/{delay_den})sec,dispose_op:{dispose_op},\
+        blend_op:{blend_op}"
+    );
+}
+
+// https://www.w3.org/TR/png-3/#fdAT-chunk Frame Data Chunk
+pub fn parse_chunk_fdat(chunk_data: &[u8]) {
+    let sequence_number = u32::from_be_bytes(chunk_data[..4].try_into().unwrap());
+    println!("\tsequence_number:{sequence_number:<3}");
+    // let mut out: Vec<u8> = Vec::with_capacity(1920 * 1080);
+    // zlib(&data[4..], &mut out);
 }
 
 // https://www.w3.org/TR/png-3/#12Encoder-gamma-handling
@@ -821,21 +1011,34 @@ pub fn parse_chunk(chunks: &Vec<Chunk<'_>>) {
         {image_type:?}({color_type}),compression({compression:?}),\
         filter({filter:?}),interlace({interlace:?})"
     );
-
-    // https://www.w3.org/TR/png-3/#11PLTE
-    let mut plte: Option<&[u8]> = None;
-    for chunk in chunks {
-        if &chunk.chunk_type == b"PLTE" {
-            plte = Some(chunk.data);
-        }
+    let first_idat_pos = chunks
+        .iter()
+        .position(|c| c.chunk_type == *b"IDAT")
+        .unwrap();
+    let mut last_idat_pos = first_idat_pos;
+    while last_idat_pos < chunks.len() && chunks[last_idat_pos].chunk_type == *b"IDAT" {
+        last_idat_pos += 1;
     }
-    if plte.is_some() {
-        let plte = plte.unwrap();
-        assert_eq!(
-            plte.len() % 3,
-            0,
-            "The length of the PLTE chunk must be divisible by 3."
-        );
+    let before_idat_chunks = &chunks[..first_idat_pos];
+    let after_idat_chunks = &chunks[last_idat_pos..];
+    for chunk in before_idat_chunks {
+        chunk.verify_crc();
+        println!("chunk(\"{}\"),length {}", chunk.chunk_type(), chunk.length);
+        let chunk_data = chunk.data;
+        match &chunk.chunk_type {
+            b"PLTE" => parse_chunk_plte(chunk_data),
+            b"cHRM" => parse_chunk_chrm(chunk_data),
+            b"gAMA" => parse_chunk_gama(chunk_data),
+            b"sRGB" => parse_chunk_srgb(chunk_data),
+            b"tEXt" => parse_chunk_text(chunk_data),
+            b"tIME" => parse_chunk_time(chunk_data),
+            b"zEXt" => parse_chunk_ztxt(chunk_data),
+            b"iTXt" => parse_chunk_itxt(chunk_data),
+            b"pHYs" => parse_chunk_phys(chunk_data),
+            b"acTL" => parse_chunk_actl(chunk_data),
+            b"fcTL" => parse_chunk_fctl(chunk_data),
+            _ => {}
+        }
     }
 
     // https://www.w3.org/TR/png-3/#11IDAT
@@ -845,6 +1048,8 @@ pub fn parse_chunk(chunks: &Vec<Chunk<'_>>) {
         .collect();
     let mut len = 0;
     for idat in &idat_chunks {
+        idat.verify_crc();
+        println!("chunk(\"{}\"),length {}", idat.chunk_type(), idat.length);
         len += idat.length;
     }
     let mut idat_data = Vec::with_capacity(len as usize);
@@ -867,277 +1072,46 @@ pub fn parse_chunk(chunks: &Vec<Chunk<'_>>) {
         let start = scan * i;
         let end = scan * (i + 1);
         let filter = FilterType::filter_type(out[start]);
-        filter.apply(
+        filter.unfilter(
             &mut out[start + 1..end],
             &prev_scanline,
             channal * bit_width as usize / 8,
         );
         prev_scanline.copy_from_slice(&out[start + 1..end]);
     }
+
     // let mut rgb = Vec::with_capacity(height * (scan - 1));
     // for i in 0..height {
     //     let start = scan * i;
     //     let end = scan * (i + 1);
     //     rgb.extend_from_slice(&out[start + 1..end]);
     // }
+
+    for chunk in after_idat_chunks {
+        chunk.verify_crc();
+        println!("chunk(\"{}\"),length {}", chunk.chunk_type(), chunk.length);
+        let chunk_data = chunk.data;
+        match &chunk.chunk_type {
+            b"IEND" => {}
+            b"fcTL" => parse_chunk_fctl(chunk_data),
+            b"fdAT" => parse_chunk_fdat(chunk_data),
+            b"tIME" => parse_chunk_time(chunk_data),
+            b"tEXt" => parse_chunk_text(chunk_data),
+            b"zEXt" => parse_chunk_ztxt(chunk_data),
+            b"iTXt" => parse_chunk_itxt(chunk_data),
+            _ => {}
+        }
+    }
 }
 
 fn main() -> io::Result<()> {
     let args: Vec<String> = env::args().collect();
     let mut file = File::open(&args[1])?;
-    println!("{args:?}");
     let file_size = file.metadata()?.len() as usize;
     let mut buf = Vec::with_capacity(file_size);
     file.read_to_end(&mut buf)?;
     assert_eq!(buf[..8], PNG_SIGNATURE, "Incorrect PNG format signature.");
     let chunks = read_chunk(&buf[8..]);
     parse_chunk(&chunks);
-    for chunk in chunks {
-        chunk.verify_crc();
-        println!("chunk(\"{}\"),length {}", chunk.chunk_type(), chunk.length);
-        let len = chunk.length;
-        let data = chunk.data;
-        match &chunk.chunk_type {
-            // https://www.w3.org/TR/png-3/#11tEXt
-            // struct tEXt<'a> {
-            //     length: u32,
-            //     chunk_type: [u8; 4],
-            //     keyword: &'a [u8],
-            //     null: u8,
-            //     text_string: &'a [u8],
-            //     crc: u32,
-            // }
-            b"tEXt" => {
-                let null_pos = data.iter().position(|&b| b == 0).unwrap();
-
-                let keyword = str::from_utf8(&data[..null_pos]).unwrap();
-                let text_string = str::from_utf8(&data[null_pos + 1..]).unwrap();
-
-                println!("\tkeyword:{keyword},text_string:{text_string}");
-            }
-            // https://www.w3.org/TR/png-3/#11iTXt
-            // struct iTXt<'a> {
-            //     length: u32,
-            //     chunk_type: [u8; 4],
-            //     keyword: &'a [u8],
-            //     null: u8,
-            //     compression_flag: u8,
-            //     compression_method: u8,
-            //     language_tag: &'a [u8],
-            //     null2: u8,
-            //     translated_keyword: &'a [u8],
-            //     null3: u8,
-            //     text: &'a [u8],
-            //     crc: u32,
-            // }
-            b"iTXt" => {
-                let null_pos = data.iter().position(|&b| b == 0).unwrap();
-
-                let keyword = str::from_utf8(&data[..null_pos]).unwrap();
-
-                let compression_flag = data[null_pos + 1];
-                let compression_method = data[null_pos + 2];
-
-                // language_tag
-                let language_tag_start = null_pos + 3;
-
-                let null_pos2 = data[language_tag_start..]
-                    .iter()
-                    .position(|&b| b == 0)
-                    .unwrap();
-
-                let language_tag_end = language_tag_start + null_pos2;
-
-                let language_tag =
-                    str::from_utf8(&data[language_tag_start..language_tag_end]).unwrap();
-
-                // translated_keyword
-                let translated_keyword_start = language_tag_end + 1;
-
-                let null_pos3 = data[translated_keyword_start..]
-                    .iter()
-                    .position(|&b| b == 0)
-                    .unwrap();
-
-                let translated_keyword_end = translated_keyword_start + null_pos3;
-
-                let translated_keyword =
-                    str::from_utf8(&data[translated_keyword_start..translated_keyword_end])
-                        .unwrap();
-
-                // text
-                let text = str::from_utf8(&data[translated_keyword_end + 1..]).unwrap();
-
-                println!(
-                    "\tkeyword:{keyword}, \
-     compression_flag:{compression_flag}, \
-     compression_method:{compression_method}, \
-     language_tag:{language_tag}, \
-     translated_keyword:{translated_keyword}, \
-     text:{text}"
-                );
-            }
-            // https://www.w3.org/TR/png-3/#11pHYs
-            // struct pHYs{
-            //     length: u32,
-            //     chunk_type: [u8; 4],
-            //     pixels_per_unit_x_axis:u32,
-            //     pixels_per_unit_y_axis:u32,
-            //     unit_specifier:u8, (0) unit is unknown  (1)unit is the metre
-            //     crc: u32,
-            // }
-            b"pHYs" => {
-                // Physical pixel dimensions
-                assert_eq!(9, len);
-                let pixels_per_unit_x_axis = u32::from_be_bytes(data[..4].try_into().unwrap());
-                let pixels_per_unit_y_axis = u32::from_be_bytes(data[4..8].try_into().unwrap());
-                let unit_specifier = match data[8] {
-                    0 => "unit is unknown",
-                    1 => "unit is the metre",
-                    _ => "Error",
-                };
-                println!(
-                    "\tx:{pixels_per_unit_x_axis},y:{pixels_per_unit_y_axis},{unit_specifier}"
-                );
-            }
-            // https://www.w3.org/TR/png-3/#srgb-standard-colour-space
-            // struct sRGB {
-            //     length: u32,
-            //     chunk_type: [u8; 4],
-            //     rendering_intent: u8,
-            //     crc: u32,
-            // }
-            b"sRGB" => {
-                // Standard RGB color space
-                assert_eq!(1, len);
-                let rendering_intent = match data[0] {
-                    0 => "Perceptual",
-                    1 => "Relative colorimetric",
-                    2 => "Saturation",
-                    3 => "Absolute colorimetric",
-                    _ => "Error",
-                };
-                println!("\trendering_intent:{rendering_intent}");
-            }
-            // https://www.w3.org/TR/png-3/#11cHRM
-            // struct cHRM {
-            //     length: u32,
-            //     chunk_type: [u8; 4],
-            //     white_point_x: u32, representing the x or y value times 100000.
-            //     white_point_y: u32,
-            //     red_x: u32,
-            //     red_y: u32,
-            //     green_x: u32,
-            //     green_y: u32,
-            //     blue_x: u32,
-            //     blue_y: u32,
-            //     crc: u32,
-            // }
-            b"cHRM" => {
-                // Primary chromaticities and white point
-                assert_eq!(32, len);
-                let white_point_x =
-                    u32::from_be_bytes(data[..4].try_into().unwrap()) as f64 / 100000.0;
-                let white_point_y =
-                    u32::from_be_bytes(data[4..8].try_into().unwrap()) as f64 / 100000.0;
-                let red_x = u32::from_be_bytes(data[8..12].try_into().unwrap()) as f64 / 100000.0;
-                let red_y = u32::from_be_bytes(data[12..16].try_into().unwrap()) as f64 / 100000.0;
-                let green_x =
-                    u32::from_be_bytes(data[16..20].try_into().unwrap()) as f64 / 100000.0;
-                let green_y =
-                    u32::from_be_bytes(data[20..24].try_into().unwrap()) as f64 / 100000.0;
-                let blue_x = u32::from_be_bytes(data[24..28].try_into().unwrap()) as f64 / 100000.0;
-                let blue_y = u32::from_be_bytes(data[28..32].try_into().unwrap()) as f64 / 100000.0;
-                println!(
-                    "\twhite_point_x:{white_point_x},white_point_y:{white_point_y},red_x:{red_x},red_y:{red_y},green_x:{green_x},green_y:{green_y},blue_x:{blue_x},blue_y:{blue_y}"
-                );
-            }
-            // https://www.w3.org/TR/png-3/#11gAMA
-            // struct acTL {
-            //     length: u32,
-            //     chunk_type: [u8; 4],
-            //     gamma：u32,
-            //     crc: u32,
-            // }
-            b"gAMA" => {
-                // Image gamma
-                assert_eq!(4, len);
-                let gamma = u32::from_be_bytes(data[..4].try_into().unwrap()) as f64 / 100000.0;
-                println!("\tgamma:{gamma}");
-            }
-            // https://www.w3.org/TR/png-3/#acTL-chunk
-            // struct acTL {
-            //     length: u32,
-            //     chunk_type: [u8; 4],
-            //     num_frames: u32,
-            //     num_plays: u32,
-            //     crc: u32,
-            // }
-            b"acTL" => {
-                // Animation Control Chunk
-                assert_eq!(8, len);
-
-                let num_frames = u32::from_be_bytes(data[..4].try_into().unwrap());
-                let num_plays = u32::from_be_bytes(data[4..].try_into().unwrap());
-                println!("\tnum_frames:{num_frames},num_plays:{num_plays}");
-            }
-            // https://www.w3.org/TR/png-3/#fcTL-chunk
-            // struct fcTL {
-            //     length: u32,
-            //     chunk_type: [u8; 4],
-            //     sequence_number: u32,
-            //     width: u32,
-            //     height: u32,
-            //     x_offset: u32,
-            //     y_offset: u32,
-            //     delay_num: u16,
-            //     delay_den: u16, If the denominator is 0, it is to be treated as if it were 100
-            //     dispose_op: u8,
-            //     blend_op: u8,
-            //     crc: u32,
-            // }
-            b"fcTL" => {
-                // Frame Control Chunk
-                assert_eq!(26, len);
-                let sequence_number = u32::from_be_bytes(data[..4].try_into().unwrap());
-                let width = u32::from_be_bytes(data[4..8].try_into().unwrap());
-                let height = u32::from_be_bytes(data[8..12].try_into().unwrap());
-                let x_offset = u32::from_be_bytes(data[12..16].try_into().unwrap());
-                let y_offset = u32::from_be_bytes(data[16..20].try_into().unwrap());
-                let delay_num = u16::from_be_bytes(data[20..22].try_into().unwrap());
-                let delay_den = u16::from_be_bytes(data[22..24].try_into().unwrap());
-                let dispose_op = data[24];
-                let blend_op = data[25];
-                println!(
-                    "\tsequence_number:{sequence_number},width:{width},height:{height},x_offset:{x_offset},y_offset:{y_offset},delay_num:{delay_num},delay_den:{delay_den},dispose_op:{dispose_op},blend_op:{blend_op}"
-                );
-            }
-            // https://www.w3.org/TR/png-3/#fdAT-chunk
-            // struct fdAT {
-            //     length: u32,
-            //     chunk_type: [u8; 4],
-            //     sequence_number: u32,
-            //     frame_data: [u8; length - 4],
-            //     crc: u32,
-            // }
-            b"fdAT" => {
-                // Frame Data Chunk
-                let sequence_number = u32::from_be_bytes(data[..4].try_into().unwrap());
-                println!("\tsequence_number:{sequence_number:<3}");
-                // let mut out: Vec<u8> = Vec::with_capacity(1920 * 1080);
-                // zlib(&data[4..], &mut out);
-            }
-            // https://www.w3.org/TR/png-3/#11IEND
-            // pub struct IEND {
-            //     pub length: u32,
-            //     pub chunk_type: [u8; 4],
-            //     pub crc: u32,
-            // }
-            b"IEND" => { // Image trailer
-            }
-            _ => {}
-        };
-    }
-
     Ok(())
 }
