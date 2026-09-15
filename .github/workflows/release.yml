@@ -4,15 +4,16 @@ on:
     push:
         tags:
             - "v*"
-
+permissions:
+    contents: write
 jobs:
     build:
         runs-on: windows-latest
         steps:
-            - uses: actions/checkout@v3
+            - uses: actions/checkout@v4
 
             - name: Install Rust
-              uses: actions-rs/toolchain@v1
+              uses: actions-rs/toolchain@v2
               with:
                   toolchain: stable
                   override: true
