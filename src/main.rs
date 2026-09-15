@@ -1023,7 +1023,7 @@ pub fn parse_chunk(chunks: &Vec<Chunk<'_>>) {
     let after_idat_chunks = &chunks[last_idat_pos..];
     for chunk in before_idat_chunks {
         chunk.verify_crc();
-        println!("chunk(\"{}\"),length {}", chunk.chunk_type(), chunk.length);
+        println!("chunk(\"{}\") length {}", chunk.chunk_type(), chunk.length);
         let chunk_data = chunk.data;
         match &chunk.chunk_type {
             b"PLTE" => parse_chunk_plte(chunk_data),
