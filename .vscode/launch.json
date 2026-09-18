@@ -18,5 +18,30 @@
                 "pnginfo.png"
             ]
         },
+        {
+            "name": "Debug unit tests in executable 'pnginfo'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "test",
+                    "--bin=pnginfo"
+                ]
+            }
+        },
+        {
+            "name": "Debug example 'flac'",
+            "type": "lldb",
+            "request": "launch",
+            "cargo": {
+                "args": [
+                    "run",
+                    "--example=flac"
+                ]
+            },
+            "args": [
+                "1.flac"
+            ]
+        }
     ]
 }

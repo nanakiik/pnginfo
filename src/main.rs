@@ -184,7 +184,7 @@ impl ImageType {
             _ => unreachable!("There are only five types of PNG images."),
         }
     }
-    pub fn channal(self) -> usize {
+    pub fn channel(self) -> usize {
         match self {
             ImageType::Greyscale => 1,
             ImageType::Truecolor => 3,
@@ -1007,7 +1007,7 @@ pub fn parse_chunk(chunks: &Vec<Chunk<'_>>) {
     let filter = FilterMethod::method(filter_method);
     let interlace = InterlaceMethod::method(interlace_method);
     println!(
-        "{width} x {height} image,{bit_width}bit/channal,\
+        "{width} x {height} image,{bit_width}bit/channel,\
         {image_type:?}({color_type}),compression({compression:?}),\
         filter({filter:?}),interlace({interlace:?})"
     );
@@ -1023,7 +1023,7 @@ pub fn parse_chunk(chunks: &Vec<Chunk<'_>>) {
     let after_idat_chunks = &chunks[last_idat_pos..];
     for chunk in before_idat_chunks {
         chunk.verify_crc();
-        println!("chunk(\"{}\") length {}", chunk.chunk_type(), chunk.length);
+        println!("chunk(\"{}\"),length {}", chunk.chunk_type(), chunk.length);
         let chunk_data = chunk.data;
         match &chunk.chunk_type {
             b"PLTE" => parse_chunk_plte(chunk_data),
@@ -1062,24 +1062,25 @@ pub fn parse_chunk(chunks: &Vec<Chunk<'_>>) {
 
     //https://www.w3.org/TR/png-3/#7Scanline
     let len = out.len();
-    let channal = image_type.channal();
+    let channel = image_type.channel();
     let height = height as usize;
 
     let scan = len / height;
     let mut prev_scanline = vec![0; scan - 1];
-
+    println!("filter:(0 none, 1 sub, 2 up, 3 avg, 4 paeth)");
     for i in 0..height {
         let start = scan * i;
         let end = scan * (i + 1);
         let filter = FilterType::filter_type(out[start]);
+        print!("{}", out[start]);
         filter.unfilter(
             &mut out[start + 1..end],
             &prev_scanline,
-            channal * bit_width as usize / 8,
+            channel * bit_width as usize / 8,
         );
         prev_scanline.copy_from_slice(&out[start + 1..end]);
     }
-
+    println!();
     // let mut rgb = Vec::with_capacity(height * (scan - 1));
     // for i in 0..height {
     //     let start = scan * i;

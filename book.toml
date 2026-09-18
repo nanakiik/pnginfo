@@ -3,7 +3,7 @@
 authors = ["makishi"]
 language = "en"
 src = "docs"
-title = "png"
+title = "media info"
 description = "The example book covers examples."
 
 [rust]
